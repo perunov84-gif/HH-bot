@@ -1,0 +1,15 @@
+{
+  "name": "Имя Фамилия",
+  "salary_expectation": "От 70 000 рублей на руки",
+  "work_format": "Полная удаленная работа или гибридный формат в Москве",
+  "start_readiness": "Готов приступить к работе сразу",
+  "english_level": "A2 (читаю техническую документацию)",
+  "citizenship": "Гражданство РФ",
+  "location": "Москва",
+  "test_task_ready": "Да, готов выполнить тестовое задание",
+  "contacts": {
+    "phone": "+7 999 000-00-00",
+    "email": "candidate@example.com",
+    "telegram": "@your_username"
+  }
+}

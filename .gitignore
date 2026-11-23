@@ -1,0 +1,27 @@
+# Secrets & Config
+.env
+*.env
+
+# Browser Profiles & Cookies
+user_data/
+
+# Databases
+*.db
+*.sqlite3
+
+# Logs
+*.log
+
+# Personal Candidate Data
+candidate_profile.json
+cover_letter.txt
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE & OS
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
