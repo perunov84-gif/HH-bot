@@ -408,12 +408,11 @@ def search_and_apply(page: Page, search_url: str, cover_letter: str, status_call
                 delay = random.uniform(6.0, 11.0)
                 time.sleep(delay)
 
-        next_button = page.locator("a[data-qa='pager-next']").first
-        if not next_button.is_visible(timeout=2000):
-            print("[Search] Достигнута последняя страница поиска.")
-            break
-
+        # Move to next page (modern HH has numbered pagination up to ~20 pages)
         current_page += 1
+        if current_page >= 20:
+            print("[Search] Проверено 20 страниц выдачи. Завершаем текущий поиск.")
+            break
 
     return applied_list
 
