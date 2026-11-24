@@ -14,6 +14,7 @@ def get_inline_keyboard():
     return {
         "inline_keyboard": [
             [{"text": "🚀 Запустить HH Auto Agent", "callback_data": "run_agent"}],
+            [{"text": "🔝 Поднять резюме в поиске", "callback_data": "bump_resume"}],
             [{"text": "💬 Проверить чаты и автоответы", "callback_data": "check_chats"}],
             [
                 {"text": "📊 Статистика за сегодня", "callback_data": "stats"},
@@ -28,6 +29,7 @@ def get_reply_keyboard():
     return {
         "keyboard": [
             [{"text": "🚀 HH Auto Agent"}],
+            [{"text": "🔝 Поднять резюме в поиске"}],
             [{"text": "💬 Проверить чаты и автоответы"}],
             [{"text": "📊 Статистика за сегодня"}, {"text": "⚙️ Проверить статус"}]
         ],

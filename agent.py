@@ -401,9 +401,6 @@ def search_and_apply(page: Page, search_url: str, cover_letter: str, status_call
                 applied_list.append({"title": title, "company": company, "url": url})
                 print(f"  ✅ Успешный отклик: {title} в {company}! (Осталось в лимите: {remaining_limit})")
 
-                if status_callback and len(applied_list) % 5 == 0:
-                    status_callback(f"🚀 Отправлено откликов: {len(applied_list)} (в очереди...")
-
                 # Human delay between applications
                 delay = random.uniform(6.0, 11.0)
                 time.sleep(delay)
@@ -483,6 +480,94 @@ def run_agent_job(status_callback=None) -> str:
 
     telegram_bot.send_telegram_message(report_text)
     return report_text
+
+
+def bump_resume(resume_title: str = None, resume_id: str = None) -> dict:
+    """Updates / bumps the specified resume on hh.ru to place it at the top of search results."""
+    target_title = resume_title or HH_RESUME_TITLE
+    target_id = resume_id or HH_RESUME_ID
+    result = {"success": False, "status": "unknown", "message": ""}
+
+    print("=" * 60)
+    print(f"[Resume Bump] Поднятие резюме в поиске: {target_title}")
+    print("=" * 60)
+
+    USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    with sync_playwright() as p:
+        try:
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=str(USER_DATA_DIR),
+                headless=HEADLESS,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox"
+                ]
+            )
+            page = context.new_page()
+            page.goto("https://hh.ru/applicant/resumes", wait_until="domcontentloaded", timeout=30000)
+            time.sleep(2.5)
+
+            if not check_auth(page):
+                result["message"] = "❌ Ошибка авторизации на HH.ru! Запустите login.py для входа."
+                context.close()
+                return result
+
+            # Find target resume card
+            title_link = page.locator("a:has-text('Junior QA')").first
+            if title_link.count() > 0:
+                card = title_link.locator("xpath=./ancestor::div[contains(@class, 'resume') or contains(@data-qa, 'resume')][1]")
+            else:
+                card = page
+
+            card_text = card.inner_text().replace("\xa0", " ")
+
+            # Check if countdown is active (e.g. "Поднять в 14:17" or "Поднять через...")
+            time_match = re.search(r"Поднять в\s*(\d{1,2}:\d{2})", card_text)
+            if time_match:
+                next_time = time_match.group(1)
+                result["status"] = "already_bumped"
+                result["message"] = (
+                    f"⏳ <b>Поднятие пока недоступно</b>\n\n"
+                    f"HH.ru разрешает бесплатное поднятие 1 раз в 4 часа.\n"
+                    f"⏰ Следующее поднятие резюме будет доступно <b>в {next_time}</b>."
+                )
+                context.close()
+                return result
+
+            if "через" in card_text.lower():
+                result["status"] = "already_bumped"
+                result["message"] = (
+                    f"⏳ <b>Поднятие пока недоступно</b>\n\n"
+                    f"HH.ru разрешает бесплатное поднятие 1 раз в 4 часа."
+                )
+                context.close()
+                return result
+
+            # Otherwise look for active "Поднять в поиске" button
+            update_btn = card.locator("button:has-text('Поднять в поиске'), [data-qa*='resume-update'], button:has-text('Поднять')").first
+            if update_btn.is_visible(timeout=3000):
+                update_btn.click()
+                time.sleep(2)
+                result["success"] = True
+                result["status"] = "bumped"
+                result["message"] = (
+                    f"🔝 <b>Резюме успешно поднято в поиске!</b>\n\n"
+                    f"📄 <i>{target_title}</i>\n"
+                    f"⏰ Следующее бесплатное поднятие будет доступно через 4 часа."
+                )
+                context.close()
+                return result
+
+            result["message"] = "⚠️ Кнопка поднятия резюме не найдена на странице."
+            context.close()
+            return result
+
+        except Exception as e:
+            err = f"Ошибка при поднятии резюме: {e}"
+            print(f"[Resume Bump Error] {err}")
+            result["message"] = err
+            return result
 
 
 def main():

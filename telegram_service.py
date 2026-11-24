@@ -67,10 +67,7 @@ def run_agent_in_background():
     global is_running
     try:
         log("Запуск Agent в фоновом потоке...")
-        def on_status_update(status_text):
-            telegram_bot.send_telegram_message(f"ℹ️ {status_text}")
-
-        report = agent.run_agent_job(status_callback=on_status_update)
+        report = agent.run_agent_job()
         telegram_bot.send_telegram_message(
             "✅ <b>Работа HH Auto Agent завершена!</b>\n"
             "⏳ <i>Через 25 минут я автоматически проверю чаты на наличие вопросов от HR-ботов и автоответов.</i>",
@@ -110,6 +107,40 @@ def trigger_agent_run():
     )
 
     worker = threading.Thread(target=run_agent_in_background, daemon=True)
+    worker.start()
+
+
+def run_bump_resume_in_background():
+    global is_running
+    try:
+        log("Запуск поднятия резюме в фоновом потоке...")
+        telegram_bot.send_telegram_message("⏳ Проверяю резюме на HH.ru и отправляю запрос на поднятие...")
+        res = agent.bump_resume()
+        msg = res.get("message", "Готово.")
+        telegram_bot.send_telegram_message(msg, reply_markup=telegram_bot.get_inline_keyboard())
+    except Exception as e:
+        err = f"❌ Ошибка при поднятии резюме: {e}"
+        log(err)
+        telegram_bot.send_telegram_message(err, reply_markup=telegram_bot.get_inline_keyboard())
+    finally:
+        with job_lock:
+            is_running = False
+        log("Поднятие резюме завершено.")
+
+
+def trigger_resume_bump():
+    global is_running
+    with job_lock:
+        if is_running:
+            telegram_bot.send_telegram_message(
+                "⚠️ Браузер сейчас занят другой задачей. Пожалуйста, подождите.",
+                reply_markup=telegram_bot.get_inline_keyboard()
+            )
+            return
+        is_running = True
+
+    log("Получена команда на поднятие резюме!")
+    worker = threading.Thread(target=run_bump_resume_in_background, daemon=True)
     worker.start()
 
 
@@ -176,6 +207,8 @@ def handle_callback_query(cb: dict):
     try:
         if data == "run_agent":
             trigger_agent_run()
+        elif data == "bump_resume":
+            trigger_resume_bump()
         elif data == "check_chats":
             trigger_chat_check()
         elif data == "stats":
@@ -204,6 +237,7 @@ def handle_message(text: str, user_id: str):
             "• Поиск: <code>QA тестировщик</code> (1-3 года опыта, Москва/Удаленка)\n"
             f"• Резюме: <i>{agent.HH_RESUME_TITLE}</i>\n"
             "• Сопроводительное письмо: <i>Включено (гарантировано)</i>\n"
+            "• Поднятие резюме в поиске: <i>Доступно по кнопке</i>\n"
             "• Автоответчик на вопросы: <i>Настроен</i>\n\n"
             "Нажимайте на кнопки ниже для управления:"
         )
@@ -211,6 +245,9 @@ def handle_message(text: str, user_id: str):
 
     elif "HH Auto Agent" in text_clean or text_clean == "/run":
         trigger_agent_run()
+
+    elif "Поднять резюме" in text_clean or text_clean == "/bump":
+        trigger_resume_bump()
 
     elif "Проверить чаты" in text_clean or text_clean == "/chats":
         trigger_chat_check()
