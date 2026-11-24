@@ -7,7 +7,11 @@ echo Запуск Telegram-сервиса HH Auto Agent
 echo Ожидание команд из Telegram...
 echo ========================================================
 
-python -u telegram_service.py
+if exist "C:\Python312\python.exe" (
+    "C:\Python312\python.exe" -u telegram_service.py
+) else (
+    python -u telegram_service.py
+)
 
 if %ERRORLEVEL% NEQ 0 (
     echo.
