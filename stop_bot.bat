@@ -1,11 +1,11 @@
 @echo off
-chcp 65001 > nul
+cd /d "%~dp0"
 echo ========================================================
-echo Остановка сервиса HH Auto Agent...
+echo Stopping HH Auto Agent...
 echo ========================================================
 
-powershell -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*telegram_service*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force; Write-Host 'Остановлен процесс ID:' $_.ProcessId }"
+powershell -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*telegram_service*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force; Write-Host 'Stopped PID:' $_.ProcessId }"
 
 echo.
-echo Сервис HH Auto Agent полностью остановлен.
+echo Stopped successfully.
 timeout /t 3 > nul

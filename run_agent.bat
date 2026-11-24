@@ -1,22 +1,16 @@
 @echo off
-chcp 65001 > nul
 cd /d "%~dp0"
 title HH Auto Agent - Manual Run
 echo ========================================================
-echo Запуск HH.ru Авто-Агента (разовый запуск)
-echo Время запуска: %date% %time%
+echo Starting HH Auto Agent (Manual run)...
 echo ========================================================
 
-if exist "C:\Python312\python.exe" (
-    "C:\Python312\python.exe" -u agent.py
-) else (
-    python -u agent.py
-)
+"C:\Python312\python.exe" -u agent.py
 
 if %ERRORLEVEL% NEQ 0 (
     echo.
-    echo [ОШИБКА] Агент завершился с кодом %ERRORLEVEL%
+    echo [ERROR] Process finished with exit code %ERRORLEVEL%
 )
 echo.
-echo Завершено.
+echo Finished.
 pause
