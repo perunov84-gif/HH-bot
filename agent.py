@@ -11,7 +11,7 @@ from playwright.sync_api import sync_playwright, Page, TimeoutError as Playwrigh
 import database
 import telegram_bot
 
-load_dotenv()
+load_dotenv(Path(__file__).parent / ".env")
 
 USER_DATA_DIR = Path(__file__).parent / "user_data"
 COVER_LETTER_FILE = Path(__file__).parent / "cover_letter.txt"
@@ -53,37 +53,75 @@ def check_auth(page: Page) -> bool:
         return False
 
 
+def is_relevant_vacancy_title(title: str) -> bool:
+    """Filters out clearly non-QA / non-IT or mismatched-level vacancy titles."""
+    t = title.lower()
+    qa_keywords = ("qa", "тестир", "sdet", "test", "quality assurance", "qaa")
+    if not any(k in t for k in qa_keywords):
+        return False
+
+    excluded_keywords = (
+        "отк", "продавец", "консультант", "монтажник", "парфюм", "космет",
+        "изделий", "senior", "сеньор", "тимлид", "руководител", "начальник",
+        "1с", "1c", "на java", "java)"
+    )
+    if any(k in t for k in excluded_keywords):
+        return False
+    return True
+
+
 def collect_invitations(page: Page) -> list:
-    """Checks the negotiations tab for invitations received yesterday."""
+    """Checks the negotiations tab for interview invitations received yesterday or today."""
     print("[Invitations] Проверка приглашений на собеседования...")
     invitations = []
-    yesterday = datetime.now() - timedelta(days=1)
-    yesterday_str = yesterday.strftime("%d.%m")
+    now = datetime.now()
+    yesterday = now - timedelta(days=1)
 
     months_ru = {
         1: "янв", 2: "фев", 3: "мар", 4: "апр", 5: "мая", 6: "июн",
         7: "июл", 8: "авг", 9: "сен", 10: "окт", 11: "ноя", 12: "дек"
     }
+    yesterday_str = yesterday.strftime("%d.%m")
+    today_str = now.strftime("%d.%m")
     yesterday_ru = f"{yesterday.day} {months_ru.get(yesterday.month, '')}"
+    today_ru = f"{now.day} {months_ru.get(now.month, '')}"
 
     try:
         page.goto("https://hh.ru/applicant/negotiations?filter=invitations", wait_until="domcontentloaded", timeout=30000)
         time.sleep(3)
 
         negotiation_cards = page.locator("[data-qa='negotiations-item'], [data-qa='negotiation-card'], .negotiations-item").all()
-        if not negotiation_cards:
-            negotiation_cards = page.locator("div[class*='negotiation']").all()
-
-        print(f"[Invitations] Найдено элементов приглашений: {len(negotiation_cards)}")
+        print(f"[Invitations] Найдено карточек откликов: {len(negotiation_cards)}")
 
         for card in negotiation_cards:
             try:
-                card_text = card.inner_text()
-                is_yesterday = ("Вчера" in card_text) or (yesterday_ru in card_text) or (yesterday_str in card_text)
+                tag_elem = card.locator("[data-qa^='negotiations-tag']").first
+                tag_qa = (tag_elem.get_attribute("data-qa") or "") if tag_elem.count() > 0 else ""
+                tag_text = tag_elem.inner_text().strip().lower() if tag_elem.count() > 0 else ""
 
-                if is_yesterday or "сегодня" in card_text.lower():
-                    title_elem = card.locator("a[data-qa='negotiations-item__vacancy-name'], a[data-qa='vacancy-name']").first
-                    company_elem = card.locator("[data-qa='negotiations-item__company-name'], [data-qa='vacancy-company']").first
+                if "interview" not in tag_qa and "приглаш" not in tag_text:
+                    continue
+
+                card_text = card.inner_text().replace("\xa0", " ")
+                date_elem = card.locator("[data-qa='negotiations-item-date']").first
+                date_text = date_elem.inner_text().replace("\xa0", " ").strip() if date_elem.count() > 0 else card_text
+
+                is_recent = any(
+                    marker in date_text.lower()
+                    for marker in ("вчера", "сегодня", yesterday_ru, today_ru, yesterday_str, today_str)
+                )
+
+                if is_recent:
+                    title_elem = card.locator(
+                        "[data-qa='negotiations-item-vacancy'], "
+                        "a[data-qa='negotiations-item__vacancy-name'], "
+                        "a[data-qa='vacancy-name']"
+                    ).first
+                    company_elem = card.locator(
+                        "[data-qa='negotiations-item-company'], "
+                        "[data-qa='negotiations-item__company-name'], "
+                        "[data-qa='vacancy-company']"
+                    ).first
 
                     title = title_elem.inner_text().strip() if title_elem.count() > 0 else "Вакансия"
                     company = company_elem.inner_text().strip() if company_elem.count() > 0 else "Компания"
@@ -101,87 +139,104 @@ def collect_invitations(page: Page) -> list:
     return invitations
 
 
-def select_correct_resume(page: Page) -> bool:
+def select_correct_resume(page: Page, container=None) -> bool:
     """Strictly verifies and selects the target resume in modal."""
+    scope = container or page
     print(f"  [Resume] Проверка выбора резюме: '{HH_RESUME_TITLE}' (ID: {HH_RESUME_ID})")
-    
-    # 1. Check if multiple resume options / radios exist
+
+    # 0. Check if target resume is already shown as the active single selection (no radio list)
     try:
-        # Check by ID in input value or data-qa
-        id_inputs = page.locator(f"input[value*='{HH_RESUME_ID}'], [data-qa*='{HH_RESUME_ID}']").all()
-        if id_inputs:
-            for inp in id_inputs:
-                try:
-                    inp.check(timeout=1500)
-                    print("  [Resume] Резюме выбрано по ID.")
-                    return True
-                except Exception:
-                    inp.click(timeout=1500)
-                    return True
+        radios = scope.locator("input[type='radio'], div[role='radio']").all()
+        active_titles = scope.locator("[data-qa='resume-title']").all()
+        if not radios and len(active_titles) == 1:
+            current_title = active_titles[0].inner_text().replace("\xa0", " ").strip()
+            if HH_RESUME_TITLE and HH_RESUME_TITLE.lower() in current_title.lower():
+                print(f"  [Resume] Целевое резюме уже выбрано: {current_title}")
+                return True
     except Exception:
         pass
 
-    # 2. Check by Title matching keywords (Junior QA Automation Engineer / Manual Tester)
-    keywords = ["Junior QA", "QA Automation", "Manual Tester", "QA Engineer"]
+    # 1. Check by ID in input value or data-qa
+    if HH_RESUME_ID:
+        try:
+            id_inputs = scope.locator(f"input[value*='{HH_RESUME_ID}'], [data-qa*='{HH_RESUME_ID}']").all()
+            if id_inputs:
+                for inp in id_inputs:
+                    try:
+                        inp.check(timeout=1500)
+                        print("  [Resume] Резюме выбрано по ID.")
+                        return True
+                    except Exception:
+                        inp.click(timeout=1500)
+                        return True
+        except Exception:
+            pass
+
+    # 2. Check radio/list items by Title matching target title or QA keywords
+    keywords = [HH_RESUME_TITLE, "Junior QA", "QA Automation", "Manual Tester", "QA Engineer"]
+    keywords = [k for k in keywords if k]
     try:
-        resume_items = page.locator("label, div[data-qa*='resume'], li[data-qa*='resume'], div[role='radio']").all()
+        resume_items = scope.locator(
+            "label, div[role='radio'], li[data-qa*='resume']"
+        ).all()
         for item in resume_items:
             text = item.inner_text()
             if any(k.lower() in text.lower() for k in keywords):
                 try:
                     item.click(timeout=1500)
-                    print(f"  [Resume] Резюме выбрано по совпадению названия: {text[:40]}...")
+                    print(f"  [Resume] Резюме выбрано: {text.splitlines()[0][:50]}...")
                     return True
                 except Exception:
                     pass
     except Exception:
         pass
 
-    # If only 1 resume exists in account or already auto-selected
     print("  [Resume] Отдельный выбор резюме не требуется или резюме уже выбрано по умолчанию.")
     return True
 
 
-def attach_cover_letter(page: Page, cover_letter: str) -> bool:
+def attach_cover_letter(page: Page, cover_letter: str, container=None) -> bool:
     """Strictly ensures the cover letter is expanded and entered into textarea."""
+    scope = container or page
     print("  [Letter] Подготовка и прикрепление сопроводительного письма...")
 
     # 1. Expand letter if button / toggle exists
     toggle_selectors = [
+        "button[data-qa='add-cover-letter']",
         "button[data-qa='vacancy-response-letter-toggle']",
         "[data-qa='vacancy-response-letter-toggle-collapsed']",
-        "button:has-text('Написать сопроводительное')",
         "button:has-text('Добавить сопроводительное')",
+        "button:has-text('Написать сопроводительное')",
         "[role='button']:has-text('сопроводительное')",
         "span:has-text('Написать сопроводительное')"
     ]
 
     for sel in toggle_selectors:
         try:
-            toggle = page.locator(sel).first
-            if toggle.is_visible(timeout=1000):
+            toggle = scope.locator(sel).first
+            if toggle.count() > 0 and toggle.is_visible():
+                toggle.scroll_into_view_if_needed()
                 toggle.click()
-                time.sleep(0.5)
+                time.sleep(0.8)
                 break
         except Exception:
             continue
 
-    # 2. Locate textarea
+    # 2. Locate textarea (wait up to 3s for animation)
     textarea_selectors = [
         "textarea[data-qa='vacancy-response-popup-form-letter-input']",
         "textarea[name='message']",
         "textarea[data-qa='cover-letter-textarea']",
-        "div[data-qa='common-popup'] textarea",
         "textarea"
     ]
 
     textarea = None
     for sel in textarea_selectors:
         try:
-            loc = page.locator(sel).first
-            if loc.is_visible(timeout=1500):
-                textarea = loc
-                break
+            loc = scope.locator(sel).first
+            loc.wait_for(state="visible", timeout=2500)
+            textarea = loc
+            break
         except Exception:
             continue
 
@@ -197,7 +252,6 @@ def attach_cover_letter(page: Page, cover_letter: str) -> bool:
         # 4. Strict verification: ensure textarea contains content
         val = textarea.input_value()
         if not val or len(val.strip()) < 20:
-            # Fallback: type via JS
             page.evaluate(
                 """([el, text]) => {
                     el.value = text;
@@ -220,46 +274,181 @@ def attach_cover_letter(page: Page, cover_letter: str) -> bool:
         return False
 
 
-def handle_response_modal(page: Page, cover_letter: str) -> bool:
-    """Handles modal: verifies resume, guarantees cover letter, clicks submit."""
-    time.sleep(1.5)
-
-    # 1. Strictly verify/select resume
-    select_correct_resume(page)
-    time.sleep(0.5)
-
-    # 2. Strictly attach cover letter
-    letter_ok = attach_cover_letter(page, cover_letter)
-    if not letter_ok:
-        print("  [Modal] ⛔ Отмена отклика: письмо не прикреплено!")
-        return False
-
-    # 3. Click Submit button
-    submit_selectors = [
-        "button[data-qa='vacancy-response-submit-popup']",
-        "button:has-text('Отправить отклик')",
-        "button:has-text('Откликнуться')",
-        "div[data-qa='common-popup'] button[type='submit']"
+def is_application_confirmed_on_page(page: Page) -> bool:
+    """Checks visible UI state (never raw HTML) to confirm application was accepted."""
+    confirmed_locators = [
+        "[data-qa='vacancy-response-already-applied']",
+        "[data-qa='vacancy-response-link-view-topic']",
+        "a:has-text('Перейти в чат')",
+        ":text-is('Вы откликнулись')",
+        ":text-is('Вы уже откликнулись')",
+        ":text('Резюме отправлено')"
     ]
-
-    for sel in submit_selectors:
+    for sel in confirmed_locators:
         try:
-            btn = page.locator(sel).first
-            if btn.is_visible(timeout=2000):
-                btn.click()
-                time.sleep(2.5)
+            if page.locator(sel).first.is_visible(timeout=800):
                 return True
         except Exception:
             continue
 
-    print("  [Modal] Кнопка отправки отклика не найдена.")
+    # Fallback: top 'Откликнуться' button disappeared after modal closed
+    try:
+        top_btn = page.locator("a[data-qa='vacancy-response-link-top'], button[data-qa='vacancy-response-link-top']").first
+        if top_btn.count() == 0 or not top_btn.is_visible(timeout=500):
+            return True
+    except Exception:
+        pass
+
     return False
+
+
+def handle_response_modal(page: Page, cover_letter: str, captcha_hit: list = None) -> tuple:
+    """Handles modal: checks visibility/tests, attaches letter, submits, and verifies result."""
+    time.sleep(1.0)
+    dlg = page.locator("div[role='dialog'], [data-qa='common-popup']").first
+
+    # 0. Check hidden resume warning (use JS rendered height - is_visible alone is unreliable for
+    # max-height:0 elements which Playwright sometimes misreads)
+    try:
+        warn = dlg.locator("[data-qa='hidden-resume-warning']").first
+        if warn.count() > 0:
+            warn_rendered_h = warn.evaluate("e => e.getBoundingClientRect().height")
+            if warn_rendered_h > 0:
+                warn_text = warn.inner_text().replace("\xa0", " ").strip()
+                print(f"  [Modal] ⛔ HH.ru заблокировал отклик (резюме скрыто): {warn_text[:100]}")
+                return False, "resume_hidden"
+    except Exception:
+        pass
+
+    # 1. Check for questionnaire / screening test INSIDE the modal
+    try:
+        has_questions = (
+            dlg.locator("[data-qa='task-body'], textarea[name^='task_'], [data-qa*='question']").first.is_visible(timeout=400)
+            or "ответьте на вопрос" in dlg.inner_text().lower()
+            or "пройдите тест" in dlg.inner_text().lower()
+        )
+        if has_questions:
+            print("  -> Вакансия требует прохождения отдельного теста/опроса, пропускаем.")
+            return False, "test_required"
+    except Exception:
+        pass
+
+    # 2. Strictly verify/select resume
+    select_correct_resume(page, container=dlg)
+    time.sleep(0.5)
+
+    # 3. Strictly attach cover letter
+    letter_ok = attach_cover_letter(page, cover_letter, container=dlg)
+    if not letter_ok:
+        print("  [Modal] ⛔ Отмена отклика: письмо не прикреплено!")
+        return False, "modal_failed_or_no_letter"
+
+    # 4. Click Submit button
+    submit_selectors = [
+        "button[data-qa='vacancy-response-submit-popup']",
+        "button:has-text('Отправить отклик')",
+        "button:has-text('Откликнуться')",
+        "button[type='submit']"
+    ]
+
+    clicked = False
+    for sel in submit_selectors:
+        try:
+            btn = dlg.locator(sel).first
+            if btn.is_visible(timeout=2000):
+                if btn.is_disabled():
+                    print("  [Modal] ⛔ Кнопка отправки отклика заблокирована (disabled).")
+                    return False, "submit_disabled"
+                btn.scroll_into_view_if_needed()
+                time.sleep(0.3)
+                btn.click()
+                clicked = True
+                break
+        except Exception:
+            continue
+
+    if not clicked:
+        print("  [Modal] Кнопка отправки отклика не найдена.")
+        return False, "submit_button_not_found"
+
+    # 5. Strictly verify modal closed or transitioned to post-apply screen
+    try:
+        dlg.wait_for(state="hidden", timeout=4000)
+    except PlaywrightTimeoutError:
+        dlg_text = ""
+        try:
+            dlg_text = dlg.inner_text().replace("\xa0", " ").strip()
+        except Exception:
+            pass
+        dlg_lower = dlg_text.lower()
+
+        # HH.ru often shows a post-apply survey inside the same modal after successful submit
+        post_apply_markers = ("какой формат удобнее", "сохранить и продолжить", "отклик отправлен")
+        submit_gone = dlg.locator("button[data-qa='vacancy-response-submit-popup']").count() == 0
+
+        if any(m in dlg_lower for m in post_apply_markers) or (submit_gone and is_application_confirmed_on_page(page)):
+            print("  [Modal] ✅ Отклик отправлен (HH.ru показал опросник после отправки, закрываем окно).")
+            try:
+                close_btn = dlg.locator("button[data-qa='response-popup-close']").first
+                if close_btn.is_visible(timeout=1000):
+                    close_btn.click()
+                else:
+                    page.keyboard.press("Escape")
+                time.sleep(0.8)
+            except Exception:
+                pass
+            return True, "applied"
+
+        # Check if resume warning is now ACTUALLY rendered (may expand after failed submit)
+        warn_actually_shown = False
+        try:
+            warn = dlg.locator("[data-qa='hidden-resume-warning']").first
+            if warn.count() > 0:
+                warn_actually_shown = warn.evaluate("e => e.getBoundingClientRect().height") > 0
+        except Exception:
+            pass
+
+        print(f"  [Modal] ❌ Модальное окно НЕ закрылось! Отклик не отправлен. warn_shown={warn_actually_shown}. Текст: {dlg_text[:180]}")
+        if warn_actually_shown:
+            return False, "resume_hidden"
+        if captcha_hit and captcha_hit[0]:
+            print("  [Modal] ⛔ HH.ru запросил капчу (антибот-проверка 403 hhcaptcha).")
+            try:
+                page.keyboard.press("Escape")
+                time.sleep(0.5)
+            except Exception:
+                pass
+            return False, "captcha_required"
+        # Close modal to avoid blocking next vacancy
+        try:
+            page.keyboard.press("Escape")
+            time.sleep(0.5)
+        except Exception:
+            pass
+        return False, "submit_rejected_in_modal"
+
+    time.sleep(1.5)
+    if is_application_confirmed_on_page(page):
+        return True, "applied"
+
+    print("  [Modal] ⚠️ Модальное окно закрылось, но подтверждение отклика на странице не найдено.")
+    return False, "submit_not_confirmed"
 
 
 def apply_to_vacancy(page: Page, vacancy_url: str, cover_letter: str) -> dict:
     """Opens a vacancy and submits application strictly with cover letter and target resume."""
     result = {"success": False, "status": "unknown", "title": "", "company": ""}
+    captcha_hit = [False]
 
+    def _on_response(resp):
+        if resp.status == 403 and "vacancy_response" in resp.url:
+            try:
+                if "hhcaptcha" in resp.text():
+                    captcha_hit[0] = True
+            except Exception:
+                captcha_hit[0] = True
+
+    page.on("response", _on_response)
     try:
         page.goto(vacancy_url, wait_until="domcontentloaded", timeout=30000)
         time.sleep(random.uniform(2.0, 3.5))
@@ -272,11 +461,12 @@ def apply_to_vacancy(page: Page, vacancy_url: str, cover_letter: str) -> dict:
         if company_elem.count() > 0:
             result["company"] = company_elem.inner_text().strip()
 
-        # Check if already responded
+        # Check if already responded (strict visible elements only)
         already_applied = page.locator(
             "[data-qa='vacancy-response-already-applied'], "
-            ":has-text('Вы уже откликнулись'), "
-            ":has-text('Вы откликнулись')"
+            "[data-qa='vacancy-response-link-view-topic'], "
+            ":text-is('Вы уже откликнулись'), "
+            ":text-is('Вы откликнулись')"
         ).first
         if already_applied.is_visible(timeout=1000):
             print(f"  -> Уже был отклик ранее: {result['title']}")
@@ -294,8 +484,7 @@ def apply_to_vacancy(page: Page, vacancy_url: str, cover_letter: str) -> dict:
         apply_btn = page.locator(
             "a[data-qa='vacancy-response-link-top'], "
             "button[data-qa='vacancy-response-link-top'], "
-            "[data-qa='vacancy-response-link-bottom'], "
-            ":has-text('Откликнуться')"
+            "[data-qa='vacancy-response-link-bottom']"
         ).first
 
         if not apply_btn.is_visible(timeout=3000):
@@ -304,34 +493,40 @@ def apply_to_vacancy(page: Page, vacancy_url: str, cover_letter: str) -> dict:
             return result
 
         apply_btn.click()
-        time.sleep(1.5)
+        time.sleep(1.8)
 
         # Modal dialog check
         if page.locator("div[role='dialog'], [data-qa='common-popup']").first.is_visible(timeout=2500):
-            # Check for questionnaire / test
-            if page.locator("text='тестирование'").first.is_visible(timeout=500) or page.locator("text='вопрос'").first.is_visible(timeout=500):
+            success, status = handle_response_modal(page, cover_letter, captcha_hit=captcha_hit)
+            result["success"] = success
+            result["status"] = status
+            return result
+
+        # Dedicated /applicant/vacancy_response page check (e.g. screening questions)
+        if "/applicant/vacancy_response" in page.url:
+            if page.locator("[data-qa='task-body'], textarea[name^='task_']").first.is_visible(timeout=1000):
                 print("  -> Вакансия требует прохождения отдельного теста/опроса, пропускаем.")
                 result["status"] = "test_required"
                 return result
-
-            success = handle_response_modal(page, cover_letter)
-            if success:
-                result["success"] = True
-                result["status"] = "applied"
-                return result
-            else:
-                result["status"] = "modal_failed_or_no_letter"
-                return result
+            result["status"] = "redirect_response_page"
+            return result
 
         # Check if direct application completed without modal
-        time.sleep(1)
-        if "Вы откликнулись" in page.content():
+        time.sleep(1.0)
+        if is_application_confirmed_on_page(page):
             result["success"] = True
             result["status"] = "applied"
+        else:
+            result["status"] = "submit_not_confirmed"
 
     except Exception as e:
         print(f"  [Apply Error] Ошибка: {e}")
         result["status"] = f"error: {str(e)[:100]}"
+    finally:
+        try:
+            page.remove_listener("response", _on_response)
+        except Exception:
+            pass
 
     return result
 
@@ -361,20 +556,23 @@ def search_and_apply(page: Page, search_url: str, cover_letter: str, status_call
             print("[Search] Вакансий на странице не найдено или конец выдачи.")
             break
 
-        vacancy_urls = []
+        vacancy_items = []
+        seen_urls = set()
         for link in vacancy_links:
             try:
                 href = link.get_attribute("href")
                 if href and "/vacancy/" in href:
                     clean_url = href.split("?")[0]
-                    if clean_url not in vacancy_urls:
-                        vacancy_urls.append(clean_url)
+                    if clean_url not in seen_urls:
+                        seen_urls.add(clean_url)
+                        link_title = link.inner_text().replace("\xa0", " ").strip()
+                        vacancy_items.append((clean_url, link_title))
             except Exception:
                 continue
 
-        print(f"[Search] Найдено уникальных вакансий на странице: {len(vacancy_urls)}")
+        print(f"[Search] Найдено уникальных вакансий на странице: {len(vacancy_items)}")
 
-        for url in vacancy_urls:
+        for url, link_title in vacancy_items:
             if remaining_limit <= 0:
                 print("[Search] Достигнут лимит откликов.")
                 break
@@ -387,11 +585,15 @@ def search_and_apply(page: Page, search_url: str, cover_letter: str, status_call
             if database.is_vacancy_applied(vacancy_id):
                 continue
 
+            if link_title and not is_relevant_vacancy_title(link_title):
+                print(f"  [Skip] Нерелевантное название вакансии: {link_title}")
+                continue
+
             print(f"\n[Обработка вакансии] ID: {vacancy_id} ({url})")
             res = apply_to_vacancy(page, url, cover_letter)
 
             status = res.get("status", "unknown")
-            title = res.get("title") or "QA инженер"
+            title = res.get("title") or link_title or "QA инженер"
             company = res.get("company") or "Работодатель"
 
             database.save_applied_vacancy(vacancy_id, title, company, url, status)
@@ -404,6 +606,22 @@ def search_and_apply(page: Page, search_url: str, cover_letter: str, status_call
                 # Human delay between applications
                 delay = random.uniform(6.0, 11.0)
                 time.sleep(delay)
+            elif status == "resume_hidden":
+                print("  ⛔ Остановка поиска: резюме скрыто на HH.ru, дальнейшие отклики будут отклоняться.")
+                if status_callback:
+                    status_callback("⛔ Отклики заблокированы: проверьте видимость резюме на HH.ru.")
+                return applied_list
+            elif status == "captcha_required":
+                print("  ⛔ Остановка поиска: HH.ru запросил капчу (проверку на робота).")
+                msg = (
+                    "⛔ <b>Отклики приостановлены: HH.ru запросил капчу.</b>\n"
+                    "Откройте hh.ru в браузере (или запустите <code>login.py</code>), "
+                    "пройдите проверку вручную и повторите запуск."
+                )
+                telegram_bot.send_telegram_message(msg)
+                if status_callback:
+                    status_callback(msg)
+                return applied_list
 
         # Move to next page (modern HH has numbered pagination up to ~20 pages)
         current_page += 1
@@ -513,10 +731,14 @@ def bump_resume(resume_title: str = None, resume_id: str = None) -> dict:
                 context.close()
                 return result
 
-            # Find target resume card
-            title_link = page.locator("a:has-text('Junior QA')").first
+            # Find target resume card by ID or title
+            title_link = page.locator(f"a[href*='{target_id}']").first if target_id else page.locator(f"a:has-text('{target_title}')").first
+            if title_link.count() == 0:
+                title_link = page.locator("a:has-text('Junior QA')").first
             if title_link.count() > 0:
                 card = title_link.locator("xpath=./ancestor::div[contains(@class, 'resume') or contains(@data-qa, 'resume')][1]")
+                if card.count() == 0:
+                    card = title_link.locator("xpath=./ancestor::div[3]")
             else:
                 card = page
 

@@ -3,6 +3,7 @@ import sys
 import time
 import threading
 from datetime import datetime
+from pathlib import Path
 from dotenv import load_dotenv
 
 import database
@@ -10,24 +11,27 @@ import telegram_bot
 import agent
 import chat_responder
 
-load_dotenv()
+load_dotenv(Path(__file__).parent / ".env")
+LOG_PATH = Path(__file__).parent / "telegram_service.log"
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 is_running = False
 job_lock = threading.Lock()
+log_lock = threading.Lock()
 
 
 def log(msg: str):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     formatted = f"[{timestamp}] {msg}"
-    print(formatted, flush=True)
-    try:
-        with open("telegram_service.log", "a", encoding="utf-8") as f:
-            f.write(formatted + "\n")
-    except Exception:
-        pass
+    with log_lock:
+        print(formatted, flush=True)
+        try:
+            with open(LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(formatted + "\n")
+        except Exception:
+            pass
 
 
 def run_chat_responder_in_background():
@@ -35,9 +39,9 @@ def run_chat_responder_in_background():
     try:
         log("Запуск Chat Responder в фоновом потоке...")
         telegram_bot.send_telegram_message("🔍 Начинаю проверку входящих сообщений и автоответов на HH.ru...")
-        chat_responder.run_chat_responder()
+        summary = chat_responder.run_chat_responder()
         telegram_bot.send_telegram_message(
-            "✅ <b>Проверка чатов завершена.</b>\nЕсли были новые вопросы или приглашения — они отправлены выше.",
+            f"✅ <b>Проверка чатов завершена.</b>\n\n{summary}",
             reply_markup=telegram_bot.get_inline_keyboard()
         )
     except Exception as e:
@@ -66,6 +70,12 @@ def delayed_chat_check(delay_minutes: int = 25):
 def run_agent_in_background():
     global is_running
     try:
+        log("Запуск приоритетной проверки чатов перед поиском вакансий...")
+        chat_summary = chat_responder.run_chat_responder()
+        telegram_bot.send_telegram_message(
+            f"💬 <b>Приоритетная проверка чатов завершена:</b>\n\n{chat_summary}"
+        )
+
         log("Запуск Agent в фоновом потоке...")
         report = agent.run_agent_job()
         telegram_bot.send_telegram_message(

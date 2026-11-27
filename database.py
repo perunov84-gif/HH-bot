@@ -50,7 +50,16 @@ def init_db():
 def is_vacancy_applied(vacancy_id: str) -> bool:
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT 1 FROM applied_vacancies WHERE vacancy_id = ?", (vacancy_id,))
+        cursor.execute("""
+            SELECT 1 FROM applied_vacancies
+            WHERE vacancy_id = ?
+              AND status IN (
+                'applied', 'already_applied', 'external_redirect', 'test_required',
+                'submit_rejected_in_modal', 'submit_not_confirmed', 'no_button',
+                'redirect_response_page', 'modal_failed_or_no_letter', 'submit_disabled',
+                'submit_button_not_found', 'input_unavailable'
+              )
+        """, (vacancy_id,))
         return cursor.fetchone() is not None
 
 
